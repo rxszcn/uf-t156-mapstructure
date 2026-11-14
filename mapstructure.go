@@ -1445,37 +1445,42 @@ func (d *Decoder) decodeArray(name string, data any, val reflect.Value) error {
 	valElemType := valType.Elem()
 	arrayType := reflect.ArrayOf(valType.Len(), valElemType)
 
+	// Check input type. This must happen regardless of whether the
+	// target array is already populated: reusing a previously filled
+	// buffer must not skip validation and panic below.
+	if dataValKind != reflect.Array && dataValKind != reflect.Slice {
+		if d.config.WeaklyTypedInput {
+			switch {
+			// Empty maps turn into empty arrays
+			case dataValKind == reflect.Map:
+				if dataVal.Len() == 0 {
+					val.Set(reflect.Zero(arrayType))
+					return nil
+				}
+
+			// All other types we try to convert to the array type
+			// and "lift" it into it. i.e. a string becomes a string array.
+			default:
+				// Just re-try this function with data as a slice.
+				return d.decodeArray(name, []any{data}, val)
+			}
+		}
+
+		return newDecodeError(name,
+			fmt.Errorf("source data must be an array or slice, got %s", dataValKind))
+	}
+
+	// Check the source length before touching the target. A source that
+	// is longer than the fixed-size array is a validation error, never
+	// an out-of-range panic, no matter the state of the target.
+	if dataVal.Len() > arrayType.Len() {
+		return newDecodeError(name,
+			fmt.Errorf("expected source data to have length less or equal to %d, got %d", arrayType.Len(), dataVal.Len()))
+	}
+
 	valArray := val
 
 	if isComparable(valArray) && valArray.Interface() == reflect.Zero(valArray.Type()).Interface() || d.config.ZeroFields {
-		// Check input type
-		if dataValKind != reflect.Array && dataValKind != reflect.Slice {
-			if d.config.WeaklyTypedInput {
-				switch {
-				// Empty maps turn into empty arrays
-				case dataValKind == reflect.Map:
-					if dataVal.Len() == 0 {
-						val.Set(reflect.Zero(arrayType))
-						return nil
-					}
-
-				// All other types we try to convert to the array type
-				// and "lift" it into it. i.e. a string becomes a string array.
-				default:
-					// Just re-try this function with data as a slice.
-					return d.decodeArray(name, []any{data}, val)
-				}
-			}
-
-			return newDecodeError(name,
-				fmt.Errorf("source data must be an array or slice, got %s", dataValKind))
-
-		}
-		if dataVal.Len() > arrayType.Len() {
-			return newDecodeError(name,
-				fmt.Errorf("expected source data to have length less or equal to %d, got %d", arrayType.Len(), dataVal.Len()))
-		}
-
 		// Make a new array to hold our result, same size as the original data.
 		valArray = reflect.New(arrayType).Elem()
 	}
